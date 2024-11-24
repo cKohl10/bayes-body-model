@@ -1,6 +1,11 @@
 # bayes-body-model
 Quantifying the distortions of body models with Bayesian inference.
 
+# To Do
+- Start with the wrist data.
+- Use two model variants, one with a perfect spatial likelyhood and one with a perfect prior.
+- Use a neural network to fit the skewed prior.
+
 ## Sources
 The modeling is based on [3] and the experiemental data is from [1] and [2].
 
