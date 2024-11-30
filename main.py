@@ -187,17 +187,34 @@ if __name__ == "__main__":
             initial_p = {'X': initial_pose[:8], 'Y': initial_pose[8:]}
                 
 
-            fig, ax = plt.subplots(figsize=(8, 6))
-            data.plot_dorsum_data(combined_data, ax, 3, participant)
-            data.plot_wrist_ellipses(combined_data['pre_position']['X']/combined_data['pix2cm'], combined_data['pre_position']['Y']/combined_data['pix2cm'], combined_data['likelihood_cov'], ax, 'b', 0.1)
-            data.plot_wrist_ellipses(combined_data['prior_mean']['X'], combined_data['prior_mean']['Y'], combined_data['prior_cov'], ax, 'r', 0.1)
-            # plt.show()
+            fig, axs = plt.subplots(1, 3, figsize=(18, 6))  # Create a figure with 3 side-by-side subplots
 
-            # fig, ax = plt.subplots(figsize=(8, 6))
-            data.plot_connection(ax, best_prior_mean,1, 'g', label='Fitted Prior')
-            # data.plot_connection(ax, initial_p, 1, 'r', label='Optimizer Initial')
-            plt.title(f"Participant {participant}, Trial {k+1}, Loss: {loss_values[k]:.2f}")
-            plt.legend()
+            # Plot dorsum data on the first subplot
+            data.plot_dorsum_data(combined_data, axs[0], 3, participant)
+            data.plot_connection(axs[0], best_prior_mean, 1, 'g', label='Fitted Prior')
+            data.plot_wrist_ellipses(combined_data['pre_position']['X']/combined_data['pix2cm'], combined_data['pre_position']['Y']/combined_data['pix2cm'], combined_data['likelihood_cov'], axs[0], 'b', 0.1)
+            axs[0].set_title('Pre Position')
+
+            # Plot prior mean on the second subplot
+            data.plot_dorsum_data(combined_data, axs[1], 3, participant)
+            data.plot_wrist_ellipses(combined_data['prior_mean']['X'], combined_data['prior_mean']['Y'], combined_data['prior_cov'], axs[1], 'g', 0.1)
+            data.plot_connection(axs[1], best_prior_mean, 1, 'g', label='Fitted Prior')
+            axs[1].set_title('Prior Mean')
+
+            # Plot mean judged on the third subplot
+            data.plot_dorsum_data(combined_data, axs[2], 3, participant)
+            data.plot_connection(axs[2], best_prior_mean, 1, 'g', label='Fitted Prior')
+            data.plot_wrist_ellipses(combined_data['mean_judged']['X']/combined_data['pix2cm'], combined_data['mean_judged']['Y']/combined_data['pix2cm'], combined_data['posterior_cov'], axs[2], 'k', 0.1)
+            axs[2].set_title('Mean Judged')
+
+            # Set a common title for the entire figure
+            fig.suptitle(f"Participant {participant}, Trial {k+1}, Loss: {loss_values[k]:.2f}")
+
+            # Add legend to the first subplot
+            axs[0].legend()
+            axs[1].legend()
+            axs[2].legend()
+
             plt.show()
             #fig_list.append(fig)
 
