@@ -119,7 +119,7 @@ class Data2017(Data):
             return data_dict
     
         dorsum_data = []
-        for i in range(1, 12):
+        for i in range(1, 13):
             data = pd.read_csv(f"data/Longo_2017/wrist_data_{i}.csv")
             data1 = extract_data(data, dorsum_1_rows)
             data2 = extract_data(data, dorsum_2_rows)
@@ -134,6 +134,11 @@ class Data2017(Data):
             'post_position': {'X': None, 'Y': None},
             'mean_position': {'X': None, 'Y': None},
             'mean_judged': {'X': None, 'Y': None},
+            'prior_cov': [],
+            'likelihood_cov': [],
+            'total_prior_cov': [],
+            'total_likelihood_cov': [],
+            'prior_mean': {'X': [], 'Y': []},
             'indiv_judged': {
                 '1': {'X': None, 'Y': None},
                 '2': {'X': None, 'Y': None},
@@ -168,6 +173,7 @@ class Data2017(Data):
         data3['pix2cm'] = (data1['pix2cm'] + data2['pix2cm']) / 2
 
         data3['posterior_cov'] = self.covariance_matrix(data3)
+        data3['total_posterior_cov'] = self.total_covariance(data3)
         return data3  # Add return statement
     
     def covariance_matrix(self, data):
@@ -179,6 +185,20 @@ class Data2017(Data):
             cov = np.cov(points)
             covs[j] = cov
         return covs
+        
+    def total_covariance(self, data):
+        # Create a 16x1 array of all points [x1:8, y1:8]
+        points = []
+        for j in range(len(data['mean_judged']['X'])):  # For each landmark point
+            # Add all x coordinates for this landmark
+            points.append([data['indiv_judged'][str(n+1)]['X'][j]/data['pix2cm'] for n in range(len(data['indiv_judged']))])
+            # Add all y coordinates for this landmark
+            points.append([data['indiv_judged'][str(n+1)]['Y'][j]/data['pix2cm'] for n in range(len(data['indiv_judged']))])
+        
+        points = np.array(points)  # Convert to numpy array
+        cov = np.cov(points)  # Calculate 16x16 covariance matrix
+        print(f"cov: {cov}")
+        return cov
 
     def plot_data(self, participant_num=None):
         # This plot will plot the pre positions of the dorsum, the individual judged positions, and the mean judged position
@@ -214,15 +234,9 @@ class Data2017(Data):
 
         # Plot the pre positions of the dorsum
         #ax.scatter(dorsum_data['pre_position']['X']/dorsum_data['pix2cm'], dorsum_data['pre_position']['Y']/dorsum_data['pix2cm'], label='Prior')
-        self.plot_connection(ax, dorsum_data['pre_position'], dorsum_data['pix2cm'], 'b-', label='Prior')
+        self.plot_connection(ax, dorsum_data['pre_position'], dorsum_data['pix2cm'], 'b-', label='Likelihood')
 
-        # Plot the individual judged positions
-        # colors = ['r', 'g', 'm']
-        # for i in range(1, 4):
-        #     color = colors[i-1]
-        #     ax.scatter(dorsum_data['indiv_judged'][str(i)]['X']/dorsum_data['pix2cm'], dorsum_data['indiv_judged'][str(i)]['Y']/dorsum_data['pix2cm'], label=f'Judged {i}', color=color)
-        #     plot_connection(ax, dorsum_data['indiv_judged'][str(i)], dorsum_data['pix2cm'], color)
-        self.plot_wrist_ellipses(dorsum_data['mean_judged']['X']/dorsum_data['pix2cm'], dorsum_data['mean_judged']['Y']/dorsum_data['pix2cm'], dorsum_data['posterior_cov'], ax, 'r', 0.5)
+        # self.plot_wrist_ellipses(dorsum_data['mean_judged']['X']/dorsum_data['pix2cm'], dorsum_data['mean_judged']['Y']/dorsum_data['pix2cm'], dorsum_data['posterior_cov'], ax, 'r', 0.5)
 
         # Plot the mean judged position
         #ax.scatter(dorsum_data['mean_judged']['X']/dorsum_data['pix2cm'], dorsum_data['mean_judged']['Y']/dorsum_data['pix2cm'], label='Mean Posterior', color='k')
@@ -232,7 +246,7 @@ class Data2017(Data):
         ax.set_xlabel('X (cm)')
         ax.set_ylabel('Y (cm)')
         if test_num == 3:
-            ax.set_title(f'Participant {participant} - Combined')
+            ax.set_title(f'Participant {participant}')
         else:
             ax.set_title(f'Participant {participant} Test {test_num}')
 
