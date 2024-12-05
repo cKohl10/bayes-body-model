@@ -2,15 +2,28 @@ import numpy as np
 from scipy.optimize import minimize
 from scipy.special import logsumexp
 from scipy import linalg
+import torch
+import torch.nn as nn
 # Add at the top of the file, after imports
 iteration_count = 0
 
-def transform_mu(mu, pose):
+def check_cov_for_nan(cov):
+    if np.isnan(cov).any():
+        return False
+    else:
+        return True
+
+def transform_mu(mu, pose, version=2):
     # pose is in the form [x, y, theta]
-    # mu is in the form [x1, x2, ..., x8, y1, y2, ..., y8]
+    # mu is in the form [x1, x2, ..., x8, y1, y2, ..., y8] version 1 or [x1, y1, x2, y2, ..., x8, y8] version 2
     
     # Reshape points into 2xN array for easier manipulation
-    points = np.vstack([mu[:8], mu[8:]])  # Shape: (2, 8)
+    if version == 1:
+        points = np.vstack([mu[:8], mu[8:]])  # Shape: (2, 8)
+    elif version == 2:
+        x_points = [mu[i] for i in range(0, 16, 2)]
+        y_points = [mu[i] for i in range(1, 16, 2)]
+        points = np.vstack([x_points, y_points])  # Shape: (2, 8)
     
     # Calculate centroid
     centroid = np.mean(points, axis=1, keepdims=True)  # Shape: (2, 1)
@@ -26,8 +39,17 @@ def transform_mu(mu, pose):
     rel_points = rotation_matrix @ rel_points
     points = rel_points + pose[:2].reshape(-1, 1)
     
-    # Return in original format [x1, ..., x8, y1, ..., y8]
-    return np.concatenate((points[0], points[1]))
+    # Return in original format 
+    if version == 1:
+        # [x1, ..., x8, y1, ..., y8]
+        return np.concatenate((points[0], points[1]))
+    elif version == 2:
+        # [x1, y1, x2, y2, ..., x8, y8]
+        mu_new = np.zeros(16)
+        for i in range(8):
+            mu_new[i*2] = points[0, i]
+            mu_new[i*2+1] = points[1, i]
+        return mu_new
 
 def prior_objective(connection_key, mu_prior, mu_likelihood):
     # Assumes the distances between the points are alredy known and stay the same for the prior.
@@ -53,25 +75,82 @@ def mu_loss(mu_pred, mu_true):
         loss += np.linalg.norm(np.array([mu_pred[i], mu_pred[i+8]]) - np.array([mu_true[i], mu_true[i+8]]))**2
     return loss
 
-def loc_objective(params, obs, mu_likelihood, mu_posterior, Sigma_posterior, trial_number):
-    # This optimization can only adjust the x,y,theta of the prior, keeping the original shape from the likelihood.
+def same_covariance(params):
+    mu_prior_pose = params[:3]
+    Sigma_prior_small = params[3:7]
+    Sigma_likelihood_small = params[7:]
 
-    # The params variable is structured as follows:
-    # params = [x, y, theta, sigma_prior_1, sigma_prior_2, ..., sigma_prior_dim, sigma_likelihood_1, sigma_likelihood_2, ..., sigma_likelihood_dim]
-    # where:
-    # - x, y, theta are the pose parameters (3 elements)
-    # - sigma_prior_1, sigma_prior_2, ..., sigma_prior_dim are the diagonal elements of the prior covariance matrix (dim elements)
-    # - sigma_likelihood_1, sigma_likelihood_2, ..., sigma_likelihood_dim are the diagonal elements of the likelihood covariance matrix (dim elements)
-    # 
-    # Visual depiction:
-    # params = [x, y, theta, 
-    #           sigma_prior_1, sigma_prior_2, ..., sigma_prior_dim, 
-    #           sigma_likelihood_1, sigma_likelihood_2, ..., sigma_likelihood_dim]
-    # 
-    # Example for dim=2:
-    # params = [x, y, theta, 
-    #           sigma_prior_1, sigma_prior_2, 
-    #           sigma_likelihood_1, sigma_likelihood_2]
+    Sigma_prior_small_2 = np.array([[Sigma_prior_small[0], Sigma_prior_small[1]], 
+                                    [Sigma_prior_small[2], Sigma_prior_small[3]]])
+    Sigma_likelihood_small_2 = np.array([[Sigma_likelihood_small[0], Sigma_likelihood_small[1]], 
+                                         [Sigma_likelihood_small[2], Sigma_likelihood_small[3]]])
+
+    Sigma_prior = np.zeros((16, 16))
+    Sigma_likelihood = np.zeros((16, 16))
+
+    # Propagate the 2x2 matrices diagonally across the 16x16 matrices
+    for i in range(0, 16, 2):
+        Sigma_prior[i:i+2, i:i+2] = Sigma_prior_small_2
+        Sigma_likelihood[i:i+2, i:i+2] = Sigma_likelihood_small_2
+    return mu_prior_pose, Sigma_prior, Sigma_likelihood
+
+def individual_covariance(params):
+    mu_prior_pose = params[:3]
+    Sigma_prior_small = params[3:3 + 4*8] # 32 elements
+    Sigma_likelihood_small = params[3 + 4*8:] # 32 elements
+
+    Sigma_prior = np.zeros((16, 16))
+    Sigma_likelihood = np.zeros((16, 16))
+
+    for i in range(8):
+        j = i*2
+        k = i*4
+        Sigma_prior[j, j] = Sigma_prior_small[k]
+        Sigma_prior[j, j+1] = Sigma_prior_small[k+1]
+        Sigma_prior[j+1, j] = Sigma_prior_small[k+2]
+        Sigma_prior[j+1, j+1] = Sigma_prior_small[k+3]
+        Sigma_likelihood[j, j] = Sigma_likelihood_small[k]
+        Sigma_likelihood[j, j+1] = Sigma_likelihood_small[k+1]
+        Sigma_likelihood[j+1, j] = Sigma_likelihood_small[k+2]
+        Sigma_likelihood[j+1, j+1] = Sigma_likelihood_small[k+3]
+    
+    return mu_prior_pose, Sigma_prior, Sigma_likelihood
+
+def identity_covariance(params):
+    mu_prior_pose = params[:3]
+    Sigma_prior = np.diag(params[3:16+3])
+    Sigma_likelihood = np.diag(params[16+3:])
+    return mu_prior_pose, Sigma_prior, Sigma_likelihood
+
+def extract_individual_covariance(Sigma_prior_opt, Sigma_likelihood_opt, i):
+    prior_block = Sigma_prior_opt[i*4:(i+1)*4]
+    likelihood_block = Sigma_likelihood_opt[i*4:(i+1)*4]
+    
+    # Reshape 1D arrays of 4 elements into 2x2 matrices
+    prior_matrix = np.array([[prior_block[0], prior_block[1]],
+                            [prior_block[2], prior_block[3]]])
+    likelihood_matrix = np.array([[likelihood_block[0], likelihood_block[1]],
+                                [likelihood_block[2], likelihood_block[3]]])
+    
+    return prior_matrix, likelihood_matrix
+
+def mu_reorganize(mu, version):
+    if version == 1:
+        # [x1, x2, ..., x8, y1, y2, ..., y8] -> [x1, y1, x2, y2, ..., x8, y8]
+        mu_new = np.zeros(16)
+        for i in range(8):
+            mu_new[i*2] = mu[i]
+            mu_new[i*2+1] = mu[i+8]
+    elif version == 2:
+        # [x1, y1, x2, y2, ..., x8, y8] -> [x1, x2, ..., x8, y1, y2, ..., y8]
+        mu_new = np.zeros(16)
+        for i in range(8):
+            mu_new[i] = mu[i*2]
+            mu_new[i+8] = mu[i*2+1]
+    return mu_new
+        
+
+def general_objective(params, obs, mu_likelihood, mu_posterior, trial_number, diag_only=False):
 
     # Add global counter
     global iteration_count
@@ -81,25 +160,20 @@ def loc_objective(params, obs, mu_likelihood, mu_posterior, Sigma_posterior, tri
     N, dim = obs.shape
 
     # Unpack params and create positive definite matrices using Cholesky
-    mu_prior_pose = params[:3]
-    try:
-        # L_prior = params[3:3 + dim**2].reshape(dim, dim)
-        # L_likelihood = params[3 + dim**2:].reshape(dim, dim)
+    # try:
 
-        Sigma_prior = np.diag(params[3:3 + dim])
-        Sigma_likelihood = np.diag(params[3 + dim:])
-        
-        # Create positive definite matrices
-        # Sigma_prior = L_prior @ L_prior.T
-        # Sigma_likelihood = L_likelihood @ L_likelihood.T
-        
-        # Add regularization coefficient
-        cov_reg_strength = 0.0  # Increase this value to make covariance changes more costly
-        
-        # Add regularization loss for covariance matrices
-        cov_reg_loss = (np.linalg.norm(Sigma_prior - np.eye(dim)) + 
-                       np.linalg.norm(Sigma_likelihood - np.eye(dim))) * cov_reg_strength
-        
+    if not diag_only:
+        mu_prior_pose, Sigma_prior, Sigma_likelihood = individual_covariance(params)
+    else:
+        # mu_prior_pose, Sigma_prior, Sigma_likelihood = same_covariance(params) # Projects the covariance to be the same for all points
+        mu_prior_pose, Sigma_prior, Sigma_likelihood = identity_covariance(params) # Diagonal covariance
+    # np.set_printoptions(precision=2, suppress=True, linewidth=120)
+    # print(f"Sigma_prior:\n{Sigma_prior}")
+
+    # # Compute the posterior covariance
+    # Sigma_posterior_pred = linalg.inv(linalg.inv(Sigma_prior) + linalg.inv(Sigma_likelihood))
+    
+    try:
         # Compute posterior using cho_solve for better stability
         prior_precision = linalg.cho_solve(
             linalg.cho_factor(Sigma_prior), 
@@ -123,7 +197,7 @@ def loc_objective(params, obs, mu_likelihood, mu_posterior, Sigma_posterior, tri
         return 1e10
 
     # Transform mu_prior to the pose
-    mu_prior = transform_mu(mu_likelihood, mu_prior_pose)
+    mu_prior = transform_mu(mu_likelihood, mu_prior_pose, version=2)
 
     # Compute predicted posterior parameters
     mu_posterior_pred = Sigma_posterior_pred @ (np.linalg.inv(Sigma_prior) @ mu_prior + np.linalg.inv(Sigma_likelihood) @ mu_likelihood)
@@ -133,8 +207,8 @@ def loc_objective(params, obs, mu_likelihood, mu_posterior, Sigma_posterior, tri
     
     # Use scipy's slogdet for numerical stability
     sign, logdet = np.linalg.slogdet(Sigma_posterior_pred)
-    if sign != 1:
-        return 1e10  # Return large value if not positive definite
+    # if sign != 1:
+    #     return 1e10  # Return large value if not positive definite
     
     # Compute quadratic terms efficiently
     inv_Sigma = np.linalg.inv(Sigma_posterior_pred)
@@ -150,118 +224,18 @@ def loc_objective(params, obs, mu_likelihood, mu_posterior, Sigma_posterior, tri
     loss_posterior = mu_loss(mu_posterior, mu_posterior_pred)
 
     # Modify the total loss to include regularization
-    total_loss = -log_likelihood + cov_reg_loss
+    total_loss = -log_likelihood
 
+    # Add small regularization term to ensure positive definiteness
+    epsilon = 1e-6
+    Sigma_prior += epsilon * np.eye(Sigma_prior.shape[0])
+    Sigma_likelihood += epsilon * np.eye(Sigma_likelihood.shape[0])
+    
     # At the end of the function, before returning:
-    if iteration_count % 100 == 0:  # Print every 10 iterations
+    if iteration_count % 1000 == 0:  # Print every 10 iterations
         print(f"Iteration {iteration_count:4d} | "
               f"Total Loss: {total_loss:10.4f} | "
               f"Posterior Loss: {loss_posterior:10.4f} | "
-              f"Log-Likelihood: {log_likelihood:10.4f} | "
               f"Trial Number: {trial_number}")
     
     return total_loss
-
-
-# Combined objective function
-def double_objective(params, connection_key, obs, mu_likelihood, mu_posterior, Sigma_posterior):
-    # Add global counter
-    global iteration_count
-    iteration_count += 1
-
-    # Dimensions
-    N, dim = obs.shape
-
-    # Unpack parameters
-    mu_prior = params[:dim]
-    Sigma_prior_flat = params[dim:dim + dim**2]
-    Sigma_prior = Sigma_prior_flat.reshape(dim, dim)
-    Sigma_prior = Sigma_prior @ Sigma_prior.T + 1e-6 * np.eye(dim)  # Ensure positive definite
-
-    Sigma_likelihood_flat = params[dim + dim**2:]
-    Sigma_likelihood = Sigma_likelihood_flat.reshape(dim, dim)
-    Sigma_likelihood = Sigma_likelihood @ Sigma_likelihood.T + 1e-6 * np.eye(dim)  # Ensure positive definite
-
-    # Compute predicted posterior parameters
-    Sigma_posterior_pred = np.linalg.inv(np.linalg.inv(Sigma_prior) + np.linalg.inv(Sigma_likelihood))
-    mu_posterior_pred = Sigma_posterior_pred @ (np.linalg.inv(Sigma_prior) @ mu_prior + np.linalg.inv(Sigma_likelihood) @ mu_likelihood)
-
-    # Log-likelihood computation
-    diff = obs - mu_posterior_pred  # Shape: (N, dim)
-
-    # Use scipy's slogdet for numerical stability
-    sign, logdet = np.linalg.slogdet(Sigma_posterior_pred)
-    if sign != 1:
-        raise ValueError("Covariance matrix is not positive definite.")
-    
-    # Compute quadratic terms efficiently
-    inv_Sigma = np.linalg.inv(Sigma_posterior_pred)
-    quad_terms = np.einsum('ij,ij->i', diff @ inv_Sigma, diff)  # Efficient diagonal of quadratic form
-
-    # Compute log probabilities
-    log_terms = -0.5 * dim * np.log(2 * np.pi) - 0.5 * logdet - 0.5 * quad_terms
-
-    # Total log-likelihood
-    log_likelihood = np.sum(log_terms)
-
-    # Penalty terms (if any)
-    loss_mean = np.linalg.norm(mu_posterior - mu_posterior_pred)**2
-    loss_cov = np.linalg.norm(Sigma_posterior - Sigma_posterior_pred)**2
-    loss_prior = prior_objective(connection_key, mu_prior, mu_likelihood)
-
-    # Combine loss terms
-    total_loss = loss_prior
-
-    # At the end of the function, before returning:
-    if iteration_count % 100 == 0:  # Print every 10 iterations
-        print(f"Iteration {iteration_count:4d} | "
-              f"Total Loss: {total_loss:10.4f} | "
-              f"Log-Likelihood: {-log_likelihood:10.4f} | "
-              f"Mean Loss: {loss_mean:10.4f} | "
-              f"Cov Loss: {loss_cov:10.4f}")
-    
-    return total_loss
-
-if __name__ == "__main__":
-    # Given data (example values)
-    obs = np.array([[1.4, 2.4], [1.6, 2.6], [1.5, 2.5]])  # Observations (N samples, dim features)
-    mu_likelihood = np.array([1.0, 2.0])  # Likelihood mean
-    mu_posterior = np.array([1.5, 2.5])  # Posterior mean
-    Sigma_posterior = np.array([[0.2, 0.1], [0.1, 0.3]])  # Posterior covariance
-
-    # Dimensions
-    N, dim = obs.shape
-
-    # Initial guesses
-    mu_prior_init = np.copy(mu_posterior)  # Initial guess for prior mean
-    Sigma_prior_init = np.copy(Sigma_posterior)  # Initial guess for prior covariance
-    Sigma_likelihood_init = np.copy(Sigma_posterior)  # Assume diagonal for simplicity
-
-    # Flatten initial parameters
-    init_params = np.hstack([
-        mu_prior_init, 
-        Sigma_prior_init.flatten(), 
-        Sigma_likelihood_init.flatten()
-    ])
-
-    # Optimization
-    result = minimize(
-        double_objective, 
-        init_params, 
-        args=(obs, mu_likelihood, mu_posterior, Sigma_posterior),
-        method='L-BFGS-B',
-        options={'disp': True}  # Add this line to show optimization details
-    )
-
-    # Extract results
-    optimized_params = result.x
-    mu_prior_opt = optimized_params[:dim]
-    Sigma_prior_opt = optimized_params[dim:dim + dim**2].reshape(dim, dim)
-    Sigma_prior_opt = np.dot(Sigma_prior_opt, Sigma_prior_opt.T)  # Ensure positive definite
-    Sigma_likelihood_opt = optimized_params[dim + dim**2:].reshape(dim, dim)
-    Sigma_likelihood_opt = np.dot(Sigma_likelihood_opt, Sigma_likelihood_opt.T)
-
-    # Display results
-    print("Optimized Prior Mean:", mu_prior_opt)
-    print("Optimized Prior Covariance:\n", Sigma_prior_opt)
-    print("Optimized Likelihood Covariance:\n", Sigma_likelihood_opt)

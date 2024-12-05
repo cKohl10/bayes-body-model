@@ -31,22 +31,22 @@ class Data:
             return
 
         # Plot an ellipse given a mean and covariance matrix
-        try:
-            eigenvalues, eigenvectors = np.linalg.eig(cov)
-            
-            # Check for negative eigenvalues
-            if np.any(eigenvalues < 0):
-                print("Warning: Negative eigenvalues found. Covariance matrix is not positive definite. Ellipse not plotted.")
-                return
-            
-            angle = np.degrees(np.arctan2(eigenvectors[1, 0], eigenvectors[0, 0]))
-            width, height = 2 * np.sqrt(eigenvalues)
-            ellipse = Ellipse(xy=mean, width=width, height=height, angle=angle, 
-                         color=color, alpha=alpha)
-            ax.add_patch(ellipse)
-        except:
-            print("Warning: Could not plot ellipse.")
+        eigenvalues, eigenvectors = np.linalg.eig(cov)
+        
+        # Convert to real numbers, discarding imaginary components
+        eigenvalues = np.real(eigenvalues)
+        eigenvectors = np.real(eigenvectors)
+        
+        # Check for negative eigenvalues
+        if np.any(eigenvalues < 0):
+            print("Warning: Negative eigenvalues found. Covariance matrix is not positive definite. Ellipse not plotted.")
             return
+        
+        angle = np.degrees(np.arctan2(eigenvectors[1, 0], eigenvectors[0, 0]))
+        width, height = 2 * np.sqrt(eigenvalues)
+        ellipse = Ellipse(xy=mean, width=width, height=height, angle=angle, 
+                        color=color, alpha=alpha)
+        ax.add_patch(ellipse)
     
 # Wrist data from Longo 2017
 class Data2017(Data):
@@ -174,6 +174,7 @@ class Data2017(Data):
 
         data3['posterior_cov'] = self.covariance_matrix(data3)
         data3['total_posterior_cov'] = self.total_covariance(data3)
+        # print(f"data3['total_posterior_cov']: {data3['total_posterior_cov']}")
         return data3  # Add return statement
     
     def covariance_matrix(self, data):
@@ -187,18 +188,14 @@ class Data2017(Data):
         return covs
         
     def total_covariance(self, data):
-        # Create a 16x1 array of all points [x1:8, y1:8]
-        points = []
-        for j in range(len(data['mean_judged']['X'])):  # For each landmark point
-            # Add all x coordinates for this landmark
-            points.append([data['indiv_judged'][str(n+1)]['X'][j]/data['pix2cm'] for n in range(len(data['indiv_judged']))])
-            # Add all y coordinates for this landmark
-            points.append([data['indiv_judged'][str(n+1)]['Y'][j]/data['pix2cm'] for n in range(len(data['indiv_judged']))])
-        
-        points = np.array(points)  # Convert to numpy array
-        cov = np.cov(points)  # Calculate 16x16 covariance matrix
-        print(f"cov: {cov}")
-        return cov
+        # Create a 16x1 array of all points [x1, y1, x2, y2, ..., x8, y8]
+        total_cov = np.zeros((16, 16))
+        covs = data['posterior_cov']
+        for j in range(len(covs)):
+            k=j*2
+            total_cov[k:k+2, k:k+2] = covs[j]
+
+        return total_cov
 
     def plot_data(self, participant_num=None):
         # This plot will plot the pre positions of the dorsum, the individual judged positions, and the mean judged position
