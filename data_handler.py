@@ -207,7 +207,7 @@ class Data2017(Data):
             self.plot_dorsum_data(dorsum_data[0], ax1, 1, participant_num)
             self.plot_dorsum_data(dorsum_data[1], ax2, 2, participant_num)
             self.plot_dorsum_data(dorsum_data[2], ax3, 3, participant_num)
-            fig.show()
+            
 
         else:
             for i in range(len(self.dorsum_data)):
@@ -216,34 +216,43 @@ class Data2017(Data):
                 self.plot_dorsum_data(dorsum_data[0], ax1, 1, i+1)
                 self.plot_dorsum_data(dorsum_data[1], ax2, 2, i+1)
                 self.plot_dorsum_data(dorsum_data[2], ax3, 3, i+1)
-                fig.show()
+                
 
-        plt.show()
+        return fig
 
-    def plot_connection(self, ax, data_segment, pix2cm, color, label=None):
+    def plot_connection(self, ax, data_segment, pix2cm, color, label=None, points=False):
         for i, connection in enumerate(self.connection_key):
             if i == 0:
                 ax.plot([data_segment['X'][connection[0]-1]/pix2cm, data_segment['X'][connection[1]-1]/pix2cm], [data_segment['Y'][connection[0]-1]/pix2cm, data_segment['Y'][connection[1]-1]/pix2cm], color, label=label)
             else:
                 ax.plot([data_segment['X'][connection[0]-1]/pix2cm, data_segment['X'][connection[1]-1]/pix2cm], [data_segment['Y'][connection[0]-1]/pix2cm, data_segment['Y'][connection[1]-1]/pix2cm], color)
 
+        if points:
+            ax.scatter(data_segment['X']/pix2cm, data_segment['Y']/pix2cm, color=color)
+
+            # Label each point
+            # for j in range(len(data_segment['X'])):
+            #     ax.text(data_segment['X'][j]/pix2cm, data_segment['Y'][j]/pix2cm + 0.4, str(j+1), color=color)
+
     def plot_dorsum_data(self, dorsum_data, ax, test_num, participant):
 
         # Plot the pre positions of the dorsum
         #ax.scatter(dorsum_data['pre_position']['X']/dorsum_data['pix2cm'], dorsum_data['pre_position']['Y']/dorsum_data['pix2cm'], label='Prior')
-        self.plot_connection(ax, dorsum_data['pre_position'], dorsum_data['pix2cm'], 'b-', label='Likelihood')
+        self.plot_connection(ax, dorsum_data['pre_position'], dorsum_data['pix2cm'], 'b', label='Likelihood', points=True)
 
         # self.plot_wrist_ellipses(dorsum_data['mean_judged']['X']/dorsum_data['pix2cm'], dorsum_data['mean_judged']['Y']/dorsum_data['pix2cm'], dorsum_data['posterior_cov'], ax, 'r', 0.5)
 
         # Plot the mean judged position
         #ax.scatter(dorsum_data['mean_judged']['X']/dorsum_data['pix2cm'], dorsum_data['mean_judged']['Y']/dorsum_data['pix2cm'], label='Mean Posterior', color='k')
-        self.plot_connection(ax, dorsum_data['mean_judged'], dorsum_data['pix2cm'], 'k-', label='Posterior')
+        self.plot_connection(ax, dorsum_data['mean_judged'], dorsum_data['pix2cm'], 'k', label='Posterior', points=True)
         ax.legend()
         ax.set_aspect('equal', adjustable='box')
         ax.set_xlabel('X (cm)')
         ax.set_ylabel('Y (cm)')
-        if test_num == 3:
+        if test_num == 4:
             ax.set_title(f'Participant {participant}')
+        elif test_num == 3:
+            ax.set_title(f'Participant {participant} (Mean)')
         else:
             ax.set_title(f'Participant {participant} Test {test_num}')
 
@@ -352,4 +361,63 @@ class Data2016(Data):
 
 if __name__ == "__main__":
     data = Data2017()
-    data.plot_data(participant_num=None)
+    fig, ax = plt.subplots()
+    dorsum_data = data.dorsum_data[0][2]
+    data.plot_connection(ax, dorsum_data['pre_position'], dorsum_data['pix2cm'], 'b', label='Individual Points', points=True)
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_xlabel('X (cm)')
+    ax.set_ylabel('Y (cm)')
+    ax.set_title('Example Grid Configuration')
+    # Add a small extra margin to the bounds
+    x_min, x_max = ax.get_xlim()
+    y_min, y_max = ax.get_ylim()
+    x_max = x_max*1.1
+    margin = 0.1  # 10% margin
+
+    x_margin = (x_max - x_min) * margin
+    y_margin = (y_max - y_min) * margin
+
+    ax.set_xlim(x_min - x_margin, x_max + x_margin)
+    ax.set_ylim(y_min - y_margin, y_max + y_margin)
+
+    # Calculate the centroid of the pre_position points
+    centroid_x = np.mean(dorsum_data['pre_position']['X'] / dorsum_data['pix2cm'])
+    centroid_y = np.mean(dorsum_data['pre_position']['Y'] / dorsum_data['pix2cm'])
+
+    # Plot the centroid
+    ax.plot(centroid_x, centroid_y, 'ro', label='Reference Point')
+    # Define the angle theta (in degrees)
+    theta = 110  # Set theta to 90 degrees for the up direction
+
+    # Convert theta to radians
+    theta_rad = np.radians(theta)
+
+    # Calculate the length of the arrow
+    arrow_length = 2.5  # Example length, you can change this value as needed
+    gap = 0.3
+
+    # Calculate the end point of the arrow
+    arrow_x = centroid_x + arrow_length * np.cos(theta_rad)
+    arrow_y = centroid_y + arrow_length * np.sin(theta_rad)
+
+    annot_x = arrow_x + gap * np.cos(theta_rad)
+    annot_y = arrow_y + gap * np.sin(theta_rad)
+
+    # Plot the arrow representing the angle theta
+    ax.annotate('', xy=(arrow_x, arrow_y), xytext=(centroid_x, centroid_y),
+                arrowprops=dict(facecolor='black', edgecolor='black', arrowstyle='->'),
+                label='Theta')
+
+    # Add a text label for the angle theta
+    ax.text(annot_x, annot_y, r'$\theta$ = ' + f'{theta-90}°', color='black', fontsize=10, ha='center', va='center')
+
+    ax.legend()
+
+    # fig.savefig('example_grid_configuration.png', transparent=True)
+
+    plt.show()
+
+    # Graph of the posterior points
+    data.plot_data(1)
+
+
